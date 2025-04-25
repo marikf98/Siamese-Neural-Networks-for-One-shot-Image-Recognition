@@ -1,16 +1,28 @@
-# This is a sample Python script.
-
-# Press Shift+F10 to execute it or replace it with your code.
-# Press Double Shift to search everywhere for classes, files, tool windows, actions, and settings.
-
-
-def print_hi(name):
-    # Use a breakpoint in the code line below to debug your script.
-    print(f'Hi, {name}')  # Press Ctrl+F8 to toggle the breakpoint.
+from train_network import train_siamese_model
+import torch
+from data_loader import data_loader as SiameseDataset
+from evaluate_model import evaluate_siamese_model
 
 
 # Press the green button in the gutter to run the script.
 if __name__ == '__main__':
-    print_hi('PyCharm')
+    model, losses = train_siamese_model(
+        data_dir='./lfw2',
+        pairs_file='./pairsDevTrain.txt',
+        device='cuda' if torch.cuda.is_available() else 'cpu',
+        batch_size=16,
+        lr=0.0005,
+        epochs=20,
+        augment_train=True,
+        patience=10
+    )
 
-# See PyCharm help at https://www.jetbrains.com/help/pycharm/
+    results = evaluate_siamese_model(
+        model=model,
+        pairs_file='./pairsDevTest.txt',
+        device='cuda' if torch.cuda.is_available() else 'cpu',
+        batch_size=1,
+        threshold=0.5,
+        show_examples=True  # see best/worst predictions
+    )
+

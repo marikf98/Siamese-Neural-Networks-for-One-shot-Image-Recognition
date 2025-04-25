@@ -1,89 +1,82 @@
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 
+class SiameseNetwork(nn.Module):
+    """
+    Siamese Network for one-shot image recognition, based on the architecture
+    from the paper "Siamese Neural Networks for One-shot Image Recognition".
 
-# Input: two images
-# Output: a similarity score between 0 and 1 - probability of being the same class
-
-class SiameseNetwork(
-    nn.Module):  # nn.Module is the base class for all neural network modules in PyTorch we inherite from it so we can get all the base functionality
+    The network takes two grayscale images as input, processes them through
+    shared convolutional layers, computes a 4096-dimensional embedding for
+    each, calculates the L1 distance between embeddings, and outputs a
+    similarity score between 0 and 1.
+    """
     def __init__(self):
-        super(SiameseNetwork, self).__init__()  # call the constructor of the parent class - nn.Module
-        # First convolutional layer
-        self.conv1 = nn.Conv2d(in_channels=1, out_channels=64,
-                               kernel_size=10)  # Extracts 64 feature maps from the 1-channel grayscale input using 10×10 filters
-        self.relu1 = nn.ReLU()  # Applies non-linearity
-        self.pool1 = nn.MaxPool2d(
-            kernel_size=2)  # Downsamples the output by a factor of 2 - each feature map was downsampled to half its size 96*96 - 48*48
+        super(SiameseNetwork, self).__init__()
 
-        # Second convolutional layer
-        self.conv2 = nn.Conv2d(in_channels=64, out_channels=128,
-                               kernel_size=7)  # Extracts 128 feature maps from the 64-channel input using 7×7 filters
-        self.relu2 = nn.ReLU()  # Applies non-linearity
-        self.pool2 = nn.MaxPool2d(
-            kernel_size=2)  # Downsamples the output by a factor of 2 - each feature map was downsampled to half its size 42*42 - 21*21
+        self.cnn = nn.Sequential(
+            # Conv Layer 1: Input 1x105x105 -> Output 64x96x96
+            nn.Conv2d(1, 64, kernel_size=10),  # -> 96x96
+            nn.ReLU(),
+            nn.MaxPool2d(2),                  # -> 48x48
 
-        # Third convolutional layer
-        self.conv3 = nn.Conv2d(in_channels=128, out_channels=128,
-                               kernel_size=4)  # Extracts 128 feature maps from the 128-channel input using 4×4 filters
-        self.relu3 = nn.ReLU()  # Applies non-linearity
-        self.pool3 = nn.MaxPool2d(
-            kernel_size=2)  # Downsamples the output by a factor of 2 - each feature map was downsampled to half its size 18*18 - 9*9
+            # Conv Layer 2: -> 128x42x42
+            nn.Conv2d(64, 128, kernel_size=7),# -> 42x42
+            nn.ReLU(),
+            nn.MaxPool2d(2),                  # -> 21x21
 
-        # Forth convolutional layer
-        self.conv4 = nn.Conv2d(in_channels=128, out_channels=256,
-                               kernel_size=4)  # Extracts 256 feature maps from the 128-channel input using 4×4 filters
-        self.relu4 = nn.ReLU()  # Applies non-linearity
+            # Conv Layer 3: -> 128x18x18
+            nn.Conv2d(128, 128, kernel_size=4),# -> 18x18
+            nn.ReLU(),
+            nn.MaxPool2d(2),                  # -> 9x9
+            
+            # Conv Layer 4: -> 256x6x6
+            nn.Conv2d(128, 256, kernel_size=4),# -> 6x6
+            nn.ReLU()
+        )
+
+        # Flatten the output of the CNN: 256 * 6 * 6 = 9216
         self.flatten = nn.Flatten()
-        self.fc1 = nn.Linear(in_features=9216,
-                             out_features=4096)  # Fully connected layer - 9216 is the number of features after flattening the output of the last convolutional layer 256*6*6
-        self.sigmoid = nn.Sigmoid()  # Applies non-linearity
+        # Fully connected layer to create the feature vector (4096-dim) with sigmoid activation
+        self.fc1 = nn.Sequential(
+            nn.Linear(256 * 6 * 6, 4096),
+            nn.Sigmoid()  
+        )
+        # Final layer to map the L1 distance vector to a similarity score
+        self.out = nn.Linear(4096, 1)
 
-        self.out = nn.Linear(in_features=4096, out_features=1)
+    def forward_once(self, x):
+        """
+       Computes a feature embedding for a single input image.
 
-    def forward(self, x1, x2):  # x1, x2 are the two input images
-        # Encode the first image
-        out1 = self.conv1(x1)  # Apply the first convolutional layer to the first image
-        out1 = self.relu1(out1)  # Apply the ReLU activation function
-        out1 = self.pool1(out1)  # Apply the first max pooling layer to the first image
+       Args:
+           x (torch.Tensor): A batch of grayscale images of shape (batch_size, 1, 105, 105).
 
-        out1 = self.conv2(out1)  # Apply the second convolutional layer to the first image
-        out1 = self.relu2(out1)  # Apply the ReLU activation function
-        out1 = self.pool2(out1)  # Apply the second max pooling layer to the first image
+       Returns:
+           torch.Tensor: A tensor of shape (batch_size, 4096) representing the image embeddings.
+        """
+        x = self.cnn(x)
+        x = self.flatten(x)
+        x = self.fc1(x)
+        return x
 
-        out1 = self.conv3(out1)  # Apply the third convolutional layer to the first image
-        out1 = self.relu3(out1)  # Apply the ReLU activation function
-        out1 = self.pool3(out1)  # Apply the third max pooling layer to the first image
+    def forward(self, x1, x2):
+        """
+        Computes a similarity score between two input images.
 
-        out1 = self.conv4(out1)  # Apply the forth convolutional layer to the first image
-        out1 = self.relu4(out1)  # Apply the ReLU activation function
+        Args:
+            x1 (torch.Tensor): A batch of first images with shape (batch_size, 1, 105, 105).
+            x2 (torch.Tensor): A batch of second images with the same shape.
 
-        out1 = self.flatten(out1)  # Flatten the output of the last convolutional layer
-        out1 = self.fc1(out1)  # Apply the fully connected layer to the first image
-        out1 = self.sigmoid(out1)  # Apply the sigmoid activation function to the first image to scale the vector value to [0,1]
-
-        # Encode the second image
-        out2 = self.conv1(x2) # Apply the first convolutional layer to the second image
-        out2 = self.relu1(out2) # Apply the ReLU activation function
-        out2 = self.pool1(out2) # Apply the first max pooling layer to the second image
-
-        out2 = self.conv2(out2) # Apply the second convolutional layer to the second image
-        out2 = self.relu2(out2) # Apply the ReLU activation function
-        out2 = self.pool2(out2) # Apply the second max pooling layer to the second image
-
-        out2 = self.conv3(out2) # Apply the third convolutional layer to the second image
-        out2 = self.relu3(out2) # Apply the ReLU activation function
-        out2 = self.pool3(out2) # Apply the third max pooling layer to the second image
-
-        out2 = self.conv4(out2) # Apply the forth convolutional layer to the second image
-        out2 = self.relu4(out2) # Apply the ReLU activation function
-
-        out2 = self.flatten(out2) # Flatten the output of the last convolutional layer
-        out2 = self.fc1(out2) # Apply the fully connected layer to the second image
-        out2 = self.sigmoid(out2) # Apply the sigmoid activation function to the second image to scale the vector value to [0,1]
-
-        distance = torch.abs(out1 - out2)  # Compute the absolute difference between the two outputs
-        score = self.out(distance)  # Apply the final fully connected layer to the distance
-
-        return score
+        Returns:
+            torch.Tensor: A tensor of shape (batch_size, 1) with similarity scores in [0, 1],
+                          where 1 indicates high similarity (same class) and 0 indicates low similarity.
+        """
+        # Encode both images using the shared CNN
+        out1 = self.forward_once(x1)
+        out2 = self.forward_once(x2)
+        # L1 distance between feature vectors
+        distance = torch.abs(out1 - out2)
+        # Pass through final layer
+        score = self.out(distance)
+        return score # The final sigmoid is applied internally in the loss function BCEWithLogitsLoss

@@ -1,32 +1,146 @@
 import torch
 from torch.utils.data import DataLoader
-
-import siameseNetwork
-
+import time
+import copy
 from data_loader import data_loader as SiameseDataset
-device = torch.device("cpu")
-model = siameseNetwork.SiameseNetwork().to(device) # created an instance of the model and moved it to the device
-loss_func = torch.nn.BCELoss() # Binary Cross Entropy Loss
-optimizer = torch.optim.SGD(model.parameters(), lr=0.01, momentum=0.5, weight_decay=1e-4)
-data_set = SiameseDataset('./lfw2') # created an instance of the data loader
+from siameseNetwork import SiameseNetwork
+import torch.nn as nn
 
-train_loader = DataLoader(data_set, batch_size=16, shuffle=True)
+def train_siamese_model(
+    data_dir: str,
+    pairs_file: str,
+    device='cpu',
+    batch_size=16,
+    lr=0.01,
+    weight_decay=0,
+    epochs=50,
+    print_every=1,
+    augment_train=True,
+    patience=10,
+    return_best_model=True,
+):
+    """
+     Trains a SiameseNetwork model with early stopping, optional augmentation,
+        and logs training/validation loss per epoch.
+    Args:
+        data_dir (str): Root directory containing class-labeled subfolders.
+        pairs_file (str): Path to .txt file defining image pairs.
+        device (str): Device to train on ('cuda' or 'cpu').
+        batch_size (int): Batch size for training and validation.
+        lr (float): Learning rate.
+        weight_decay (float): L2 regularization factor.
+        epochs (int): Maximum number of epochs.
+        print_every (int): Frequency of printing loss information.
+        augment_train (bool): Whether to apply data augmentation to training data.
+        patience (int): Number of epochs to wait for improvement before early stopping.
+        return_best_model (bool): If True, restores and returns the best model.
 
-num_of_batches = len(train_loader)
-num_of_epoch = 200
-for epoch in range(num_of_epoch):
-    model.train() # set the model to training mode
-    running_loss = 0.0
-    for img1, img2, label in train_loader:
-        img1 = img1.to(device)
-        img2 = img2.to(device)
-        label = label.to(device).float()
-        optimizer.zero_grad() # reset gradient from the previous iteration
-        output = model(img1, img2).squeeze() # forward pass - is the same as to write model.forward(img1, img2) because we inherite from NN model will call forward
-        loss = loss_func(output.view(-1), label.view(-1))
-        loss.backward() # backpropagate so gradients are calculated.
-        optimizer.step()
-        running_loss += loss.item() # .item() to convert tensor to a float
+    Returns:
+        model (nn.Module): The trained model (restored to best state if applicable).
+        losses (dict): Dictionary with keys 'train_loss' and 'val_loss' containing loss values per epoch.
+    """
+    # Instantiate model
+    model = SiameseNetwork().to(device)
+    model.apply(init_weights)
 
-    avg_loss = running_loss / len(train_loader)
-    print(f"Epoch [{epoch + 1}/{num_of_epoch}], Loss: {avg_loss:.4f}")
+    # Load datasets
+    train_dataset = SiameseDataset(data_dir, pairs_file=pairs_file, augment=augment_train, split=True, mode='train')
+    val_dataset = SiameseDataset(data_dir, pairs_file=pairs_file, augment=False, split=True, mode='val')
+
+    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
+    val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False)
+
+    loss_func = torch.nn.BCEWithLogitsLoss()
+    optimizer = torch.optim.Adam(model.parameters(), lr=lr, weight_decay=weight_decay)
+
+    best_val_loss = float('inf') # Best validation loss
+    best_model_state = None  # To store model's best weights
+    patience_counter = 0 # Count of consecutive epochs with no improvement
+    history = { # Initialize dictionary to track loss per epoch
+        'train_loss': [],
+        'val_loss': [],
+        'train_accuracy': [],
+        'val_accuracy': []
+    }
+
+    for epoch in range(epochs):
+        start_time = time.time()
+
+        #Training
+        model.train()
+        train_loss = 0.0
+        train_acc_total = 0.0
+        for img1, img2, label in train_loader:
+            img1, img2, label = img1.to(device), img2.to(device), label.to(device).float()
+
+            optimizer.zero_grad() # Reset gradients from previous step
+            output = model(img1, img2).squeeze() # Forward pass: get similarity score predictions
+            loss = loss_func(output.view(-1), label.view(-1))  # Compute loss between predicted scores and labels
+            loss.backward() # Backpropagation
+            optimizer.step()  # Update model weights
+            train_loss += loss.item() # Accumulate batch loss
+            probs = torch.sigmoid(output.view(-1))
+            preds = (probs > 0.5).float() # Accuracy
+            acc = (preds == label.view(-1)).float().mean().item()
+            train_acc_total += acc
+        avg_train_loss = train_loss / len(train_loader) # Compute average training loss for the epoch
+        avg_train_acc = train_acc_total / len(train_loader)
+
+        #Validation
+        model.eval()
+        val_loss = 0.0
+        val_acc_total = 0.0
+        with torch.no_grad(): # Disable gradient computation for validation
+            for img1, img2, label in val_loader:
+                img1, img2, label = img1.to(device), img2.to(device), label.to(device).float()
+                output = model(img1, img2).squeeze()
+                loss = loss_func(output.view(-1), label.view(-1))
+                val_loss += loss.item()
+                probs = torch.sigmoid(output.view(-1))
+                preds = (probs > 0.5).float()
+                acc = (preds == label.view(-1)).float().mean().item()
+                val_acc_total += acc
+        avg_val_loss = val_loss / len(val_loader)
+        avg_val_acc = val_acc_total / len(val_loader)
+
+        # Store losses for plot
+        history['train_loss'].append(avg_train_loss)
+        history['val_loss'].append(avg_val_loss)
+        history['train_accuracy'].append(avg_train_acc)
+        history['val_accuracy'].append(avg_val_acc)
+
+        #Early Stopping
+        if avg_val_loss < best_val_loss:
+            best_val_loss = avg_val_loss # Update best loss
+            best_model_state = copy.deepcopy(model.state_dict()) # Save model weights
+            patience_counter = 0 # Reset patience counter
+        else:
+            patience_counter += 1 # Increment if no improvement
+            if patience_counter >= patience:
+                print(f"Early stopping at epoch {epoch + 1}. Best val loss: {best_val_loss:.4f}")
+                if return_best_model and best_model_state:
+                    model.load_state_dict(best_model_state)
+                break
+
+        #Logging
+        if (epoch + 1) % print_every == 0:
+            print(f"[{epoch + 1:03d}/{epochs}] "
+                  f"Train Loss: {avg_train_loss:.4f} | Val Loss: {avg_val_loss:.4f} | "
+                  f"Train Acc: {avg_train_acc:.4f} | Val Acc: {avg_val_acc:.4f} | "
+                  f"Time: {time.time() - start_time:.1f}s")
+
+    # If training ended before best epoch, restore the best weights
+    if return_best_model and best_model_state:
+        model.load_state_dict(best_model_state)
+
+    return model, history
+
+def init_weights(m):
+    if isinstance(m, nn.Conv2d):
+        nn.init.normal_(m.weight, mean=0.0, std=0.01)
+        if m.bias is not None: # safeguard
+            nn.init.normal_(m.bias,  mean=0.5, std=0.01)
+
+    elif isinstance(m, nn.Linear):
+        nn.init.normal_(m.weight, mean=0.0, std=0.01)
+        nn.init.normal_(m.bias,   mean=0.5, std=0.01)

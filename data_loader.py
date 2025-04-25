@@ -1,55 +1,98 @@
 import torch
-import cv2
-
+from torch.utils.data import Dataset
+from PIL import Image
 import os
-from collections import defaultdict
 import random
+from collections import defaultdict
+from torchvision import transforms
 
-class data_loader(torch.utils.data.Dataset):
-    def __init__(self, data_dir):
+class data_loader(Dataset):
+    """
+    Dataset class for generating image pairs for Siamese network training.
+
+    Args:
+        data_dir (str): Root directory of LFW images (class folders).
+        pairs_file (str): Path to the .txt file defining image pairs.
+        augment (bool): Whether to apply augmentation.
+        split (bool): If True, split the pairs into train/val.
+        mode (str): 'train' or 'val' — used if split=True.
+        val_ratio (float): Ratio of val pairs to total (default 0.2).
+        seed (int): Random seed for consistent splits.
+    """
+    def __init__(self, data_dir, pairs_file, augment=False, split=False, val_ratio=0.2, mode='train', seed=42):
         self.data_dir = data_dir
-        self.people = [p for p in os.listdir(data_dir) if os.path.isdir(os.path.join(data_dir, p))]
-        self.image_paths = []
-        self.labels = []
+        self.augment = augment
+        self.mode = mode
 
-        for i, person_name in enumerate(self.people):
-            person_dir = os.path.join(self.data_dir, person_name)
+        # Load and (optionally) split the pairs
+        all_pairs = self._load_pairs_file(pairs_file)
+        if split:
+            random.seed(seed)
+            random.shuffle(all_pairs)
+            val_size = int(len(all_pairs) * val_ratio)
+            if mode == 'train':
+                self.pairs = all_pairs[val_size:]
+            elif mode == 'val':
+                self.pairs = all_pairs[:val_size]
+            else:
+                raise ValueError("mode must be 'train' or 'val'")
+        else:
+            self.pairs = all_pairs
 
-            for img_name in os.listdir(person_dir):
-                img_path = os.path.join(person_dir, img_name)
-                self.image_paths.append(img_path)
-                self.labels.append(i)
+        # Base transform: resize + convert to tensor (normalizes to [0,1])
+        self.base_transform = transforms.Compose([
+            transforms.Resize((105, 105)),
+            transforms.ToTensor()  # Converts to float32 and scales [0, 255] → [0, 1]
+        ])
 
-        self.label_to_images = defaultdict(list)
-        for img_path, label in zip(self.image_paths, self.labels):
-            self.label_to_images[label].append(img_path)
+        # Optional augmentation (only applied when augment=True)
+        self.augment_transform = transforms.Compose([
+            transforms.RandomApply([ # From paper
+                transforms.RandomAffine(
+                    degrees=10,                # ±10°
+                    translate=(0.03, 0.03),    # ±3 %
+                    scale=(0.9, 1.1))          # ±10 % zoom
+            ], p=0.9),
+            transforms.RandomHorizontalFlip(p=0.5),  # extra for faces
+        ])
+
+    def _load_pairs_file(self, file_path):
+        pairs = []
+        with open(file_path, 'r') as f:
+            lines = f.readlines()[1:]  # Skip header
+            for line in lines:
+                parts = line.strip().split('\t')
+                if len(parts) == 3:
+                    name, idx1, idx2 = parts
+                    img1 = f"{name}/{name}_{int(idx1):04d}.jpg"
+                    img2 = f"{name}/{name}_{int(idx2):04d}.jpg"
+                    label = 1
+                elif len(parts) == 4:
+                    name1, idx1, name2, idx2 = parts
+                    img1 = f"{name1}/{name1}_{int(idx1):04d}.jpg"
+                    img2 = f"{name2}/{name2}_{int(idx2):04d}.jpg"
+                    label = 0
+                else:
+                    continue
+                pairs.append((img1, img2, label))
+        return pairs
+
     def __len__(self):
-        return len(self.image_paths)
+        return len(self.pairs)
+
+    def load_image(self, img_path):
+        """
+        Loads an image from disk, applies optional augmentation and transforms.
+        """
+        full_path = os.path.join(self.data_dir, img_path)
+        image = Image.open(full_path).convert('L')
+        if self.augment and self.mode == 'train':
+            image = self.augment_transform(image)
+        return self.base_transform(image)
 
     def __getitem__(self, idx):
-        img_path1 = self.image_paths[idx]
-        label1 = self.labels[idx]
-        same_class = random.randint(0, 1)  # 1 for same, 0 for different
-
-        if same_class:
-            possible_imgs = [p for p in self.label_to_images[label1] if p != img_path1]
-            img_path2 = random.choice(possible_imgs)
-
-        else:
-            label2 = random.choice([l for l in self.label_to_images.keys() if l != label1])
-            img_path2 = random.choice(self.label_to_images[label2])
-
-
-        image1 = cv2.imread(img_path1)
-        image1 = cv2.cvtColor(image1, cv2.COLOR_BGR2RGB)
-        image1 = cv2.resize(image1, (105, 105)) # size like in the paper
-        image1 = image1.astype('float32') / 255.0 # normalize to [0, 1]
-        image1 = torch.from_numpy(image1).permute(2, 0, 1) # convert to tensor and change the order of the dimensions from HWC to CHW
-
-        image2 = cv2.imread(img_path2)
-        image2 = cv2.cvtColor(image2, cv2.COLOR_BGR2RGB)
-        image2 = cv2.resize(image2, (105, 105))
-        image2 = image2.astype('float32') / 255.0
-        image2 = torch.from_numpy(image2).permute(2, 0, 1) # convert to tensor and change the order of the dimensions from HWC to CHW
-
-        return image1, image2, torch.tensor(int(same_class), dtype=torch.float32) # torch.tensor([int(same_class)], dtype=torch.float32) is the label for the images in a tensor format 1 same person, 0 different person
+        img_path1, img_path2, label = self.pairs[idx]
+        image1 = self.load_image(img_path1)
+        image2 = self.load_image(img_path2)
+        label = torch.tensor(float(label), dtype=torch.float32)
+        return image1, image2, label
