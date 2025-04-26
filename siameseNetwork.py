@@ -17,21 +17,25 @@ class SiameseNetwork(nn.Module):
         self.cnn = nn.Sequential(
             # Conv Layer 1: Input 1x105x105 -> Output 64x96x96
             nn.Conv2d(1, 64, kernel_size=10),  # -> 96x96
+            nn.BatchNorm2d(64),
             nn.ReLU(),
             nn.MaxPool2d(2),                  # -> 48x48
 
             # Conv Layer 2: -> 128x42x42
             nn.Conv2d(64, 128, kernel_size=7),# -> 42x42
+            nn.BatchNorm2d(128),
             nn.ReLU(),
             nn.MaxPool2d(2),                  # -> 21x21
 
             # Conv Layer 3: -> 128x18x18
             nn.Conv2d(128, 128, kernel_size=4),# -> 18x18
+            nn.BatchNorm2d(128),
             nn.ReLU(),
             nn.MaxPool2d(2),                  # -> 9x9
             
             # Conv Layer 4: -> 256x6x6
             nn.Conv2d(128, 256, kernel_size=4),# -> 6x6
+            nn.BatchNorm2d(256),
             nn.ReLU()
         )
 
