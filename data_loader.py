@@ -95,4 +95,6 @@ class data_loader(Dataset):
         image1 = self.load_image(img_path1)
         image2 = self.load_image(img_path2)
         label = torch.tensor(float(label), dtype=torch.float32)
-        return image1, image2, label
+        img_name1 = os.path.basename(img_path1)
+        img_name2 = os.path.basename(img_path2)
+        return image1, image2, label, img_name1, img_name2

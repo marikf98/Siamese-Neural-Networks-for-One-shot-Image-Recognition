@@ -70,7 +70,7 @@ def train_siamese_model(
         model.train()
         train_loss = 0.0
         train_acc_total = 0.0
-        for img1, img2, label in train_loader:
+        for img1, img2, label, _, _ in train_loader:
             img1, img2, label = img1.to(device), img2.to(device), label.to(device).float()
 
             optimizer.zero_grad() # Reset gradients from previous step
@@ -91,7 +91,7 @@ def train_siamese_model(
         val_loss = 0.0
         val_acc_total = 0.0
         with torch.no_grad(): # Disable gradient computation for validation
-            for img1, img2, label in val_loader:
+            for img1, img2, label, _, _ in val_loader:
                 img1, img2, label = img1.to(device), img2.to(device), label.to(device).float()
                 output = model(img1, img2).squeeze()
                 loss = loss_func(output.view(-1), label.view(-1))

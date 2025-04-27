@@ -33,10 +33,11 @@ def evaluate_siamese_model(model, pairs_file, device='cpu', batch_size=16, thres
     total = 0
 
     with torch.no_grad():
-        for img1, img2, label in loader:
+        for img1, img2, label, img1_name, img2_name in loader:
             img1, img2 = img1.to(device), img2.to(device)
             label = label.to(device).float()
-            score = model(img1, img2).item()
+            logit = model(img1, img2)
+            score = torch.sigmoid(logit).item()
             pred = 1.0 if score > threshold else 0.0
 
             correct += (pred == label.item())
@@ -45,6 +46,8 @@ def evaluate_siamese_model(model, pairs_file, device='cpu', batch_size=16, thres
             results.append({
                 'img1': img1.cpu(),
                 'img2': img2.cpu(),
+                'img1_name': img1_name[0],  # [0] because batch size = 1
+                'img2_name': img2_name[0],
                 'label': int(label.item()),
                 'score': score,
                 'pred': int(pred)
@@ -57,18 +60,26 @@ def evaluate_siamese_model(model, pairs_file, device='cpu', batch_size=16, thres
         correct_preds = [r for r in results if r['label'] == r['pred']]
         incorrect_preds = [r for r in results if r['label'] != r['pred']]
 
-        # Sort by certainty (confidence toward the correct label)
-        best_correct = max(correct_preds, key=lambda r: r['score'] if r['label'] == 1 else 1 - r['score'], default=None)
-        worst_correct = min(correct_preds, key=lambda r: r['score'] if r['label'] == 1 else 1 - r['score'], default=None)
-        best_fp = max(incorrect_preds, key=lambda r: r['score'], default=None)  # false positive = score too high
-        worst_fn = min(incorrect_preds, key=lambda r: r['score'], default=None)  # false negative = score too low
+        correct_preds_pos = [r for r in correct_preds if r['label'] == 1 and r['pred'] == 1]
+        correct_preds_neg = [r for r in correct_preds if r['label'] == 0 and r['pred'] == 0]
+        false_positives = [r for r in incorrect_preds if r['label'] == 0 and r['pred'] == 1]
+        false_negatives = [r for r in incorrect_preds if r['label'] == 1 and r['pred'] == 0]
 
+        # Sort by certainty (confidence toward the correct label)
+        # Best True Positive: highest score (should be close to 1)
+        best_true_positive = max(correct_preds_pos, key=lambda r: r['score'], default=None)
+        # Best True Negative: lowest score (should be close to 0)
+        best_true_negative = min(correct_preds_neg, key=lambda r: r['score'], default=None)
+        # Worst False Negative: lowest score among false negatives (bad because it was too low)
+        worst_false_negative = min(false_negatives, key=lambda r: r['score'], default=None)
+        # Worst False Positive: highest score among false positives (bad because it was too high)
+        worst_false_positive = max(false_positives, key=lambda r: r['score'], default=None)
 
         print("\nShowing classification examples:")
-        show_pair("Best Correct Match", best_correct)
-        show_pair("Worst Correct Match", worst_correct)
-        show_pair("Best False Positive", best_fp)
-        show_pair("Worst False Negative", worst_fn)
+        show_pair("Best True Positive (Correct Match)", best_true_positive)
+        show_pair("Best True Negative (Correct Non-Match)", best_true_negative)
+        show_pair("Worst False Negative (Missed Match)", worst_false_negative)
+        show_pair("Worst False Positive (Wrong Match)", worst_false_positive)
 
     return {
         'accuracy': accuracy,
@@ -82,15 +93,47 @@ def show_pair(title, pair_data):
         return
     img1 = pair_data['img1'].squeeze().numpy()
     img2 = pair_data['img2'].squeeze().numpy()
+    img1_name = pair_data['img1_name']
+    img2_name = pair_data['img2_name']
     score = pair_data['score']
     label = pair_data['label']
     pred = pair_data['pred']
 
-    fig, axs = plt.subplots(1, 2, figsize=(4, 2))
+    fig, axs = plt.subplots(1, 2, figsize=(6, 3))
     axs[0].imshow(img1, cmap='gray')
-    axs[1].imshow(img2, cmap='gray')
     axs[0].axis('off')
+    axs[0].set_title(img1_name, fontsize=8, pad=5)
+    axs[1].imshow(img2, cmap='gray')
     axs[1].axis('off')
-    fig.suptitle(f"{title}\nScore: {score:.3f} | True: {label} | Pred: {pred}")
+    axs[1].set_title(img2_name, fontsize=8, pad=5)
+    fig.suptitle(f"{title}\nScore: {score:.3f} | True: {label} | Pred: {pred}", fontsize=10)
     plt.tight_layout()
+    plt.show()
+
+
+import matplotlib.pyplot as plt
+
+def plot_training_history(history):
+    epochs = range(1, len(history['train_loss']) + 1)
+
+    # Plot Loss
+    plt.figure(figsize=(10, 4))
+    plt.plot(epochs, history['train_loss'], label='Train Loss')
+    plt.plot(epochs, history['val_loss'], label='Validation Loss')
+    plt.title('Loss per Epoch')
+    plt.xlabel('Epoch')
+    plt.ylabel('Loss')
+    plt.legend()
+    plt.grid(True)
+    plt.show()
+
+    # Plot Accuracy
+    plt.figure(figsize=(10, 4))
+    plt.plot(epochs, history['train_accuracy'], label='Train Accuracy')
+    plt.plot(epochs, history['val_accuracy'], label='Validation Accuracy')
+    plt.title('Accuracy per Epoch')
+    plt.xlabel('Epoch')
+    plt.ylabel('Accuracy')
+    plt.legend()
+    plt.grid(True)
     plt.show()
